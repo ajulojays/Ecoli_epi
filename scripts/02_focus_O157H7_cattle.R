@@ -410,35 +410,42 @@ if (nrow(temporal_data) == 0) {
       y = prop_O157H7_among_all_cattle
     )
   ) +
-    geom_ribbon(
+    geom_linerange(
       aes(
         ymin = prop_O157H7_ci_low,
-        ymax = prop_O157H7_ci_high,
-        group = 1
+        ymax = prop_O157H7_ci_high
       ),
-      alpha = 0.18
+      linewidth = 0.9,
+      alpha = 0.85
     ) +
-    geom_line(linewidth = 0.8) +
-    geom_point(size = 2.2) +
     geom_errorbar(
       aes(
         ymin = prop_O157H7_ci_low,
         ymax = prop_O157H7_ci_high
       ),
-      width = 0.15,
-      linewidth = 0.4
+      width = 0.22,
+      linewidth = 0.7,
+      alpha = 0.85
+    ) +
+    geom_line(
+      aes(group = 1),
+      linewidth = 0.75,
+      alpha = 0.85
+    ) +
+    geom_point(
+      size = 2.8
     ) +
     geom_text(
       aes(
+        y = pmin(prop_O157H7_ci_high + 0.055, 1.08),
         label = paste0(
-          "n=",
           n_O157H7,
           "/",
           total_cattle_genomes
         )
       ),
       angle = 90,
-      vjust = -0.55,
+      vjust = -0.15,
       hjust = 0.5,
       size = 2.8
     ) +
@@ -448,12 +455,13 @@ if (nrow(temporal_data) == 0) {
     ) +
     scale_y_continuous(
       labels = percent_format(accuracy = 1),
-      expand = expansion(mult = c(0.02, 0.18))
+      limits = c(0, 1.12),
+      expand = expansion(mult = c(0, 0))
     ) +
     coord_cartesian(clip = "off") +
     labs(
       title = "Temporal trend of O157:H7 among cattle E. coli genomes",
-      subtitle = "Points show annual proportion; shaded band and error bars show 95% exact binomial CI",
+      subtitle = "Points show O157:H7 proportion; vertical bars show 95% exact binomial confidence intervals",
       x = "Collection year",
       y = "O157:H7 proportion among cattle genomes",
       caption = "Years <=2000 grouped. Labels show O157:H7 count / total cattle genomes per temporal group."
@@ -461,7 +469,7 @@ if (nrow(temporal_data) == 0) {
     theme_publication(base_size = 12) +
     theme(
       axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
-      plot.margin = margin(t = 25, r = 20, b = 10, l = 10)
+      plot.margin = margin(t = 35, r = 20, b = 10, l = 10)
     )
 
   ggsave(
