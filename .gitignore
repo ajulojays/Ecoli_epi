@@ -53,3 +53,8 @@ gubbins_out/
 *.log
 *.err
 *.out
+results/*/fastas/
+results/*/checkm2/
+*.fna.gz
+*.fa.gz
+*.fasta.gz
