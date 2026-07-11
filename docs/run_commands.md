@@ -10,7 +10,7 @@ conda activate ~/epi/envs/epi
 
 ```bash
 cd ~/epi/marker_screen
-bash ~/epi/Ecoli_ECtyper_Workflow/scripts/00_run_ectyper_data5.sh
+bash ~/epi/Ecoli_epi/scripts/00_run_ectyper_data5.sh
 ```
 
 ## Check outputs
@@ -24,7 +24,7 @@ cat ~/epi/marker_screen/ectyper_logs/failed_batches.txt
 ## Run Script 01
 
 ```bash
-Rscript ~/epi/Ecoli_ECtyper_Workflow/scripts/01_summarize_ectyper_serotypes_by_source_group.R
+Rscript ~/epi/Ecoli_epi/scripts/01_summarize_ectyper_serotypes_by_source_group.R
 ```
 
 ## View summary

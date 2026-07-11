@@ -1,4 +1,4 @@
-# Ecoli_ECtyper_Workflow
+# Ecoli_epi
 
 A reproducible, code-only workflow for large-scale *Escherichia coli* genome serotyping using ECtyper, followed by source-group serotype summarization.
 
