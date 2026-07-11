@@ -44,3 +44,12 @@ Script 01 writes tables and figures under:
   results/01_serotype_summary
 
 This keeps raw serotyping outputs separate from downstream summary and plotting outputs.
+
+## Script 02
+
+Script 02 writes to:
+
+results/02_O157H7_cattle_focus/
+
+It creates data6, a cattle-only dataset containing the original data5 metadata joined to ECtyper metadata.
+
