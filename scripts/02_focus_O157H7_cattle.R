@@ -1,7 +1,7 @@
 #!/usr/bin/env Rscript
 
 # ============================================================
-# SCRIPT 02: Cattle O157:H7-focused dataset and temporal plot
+# SCRIPT 02: Cattle O157:H7-focused dataset and temporal analysis
 # ============================================================
 #
 # Purpose:
@@ -29,6 +29,8 @@
 # Figures:
 #   figures/cattle_O157H7_temporal_proportion.pdf
 #   figures/cattle_O157H7_temporal_proportion.png
+#   figures/cattle_O157H7_temporal_proportion_line.pdf
+#   figures/cattle_O157H7_temporal_proportion_line.png
 #   figures/cattle_O157H7_temporal_counts.pdf
 #   figures/cattle_O157H7_temporal_counts.png
 #   figures/cattle_O157H7_temporal_percent_stacked.pdf
@@ -291,9 +293,7 @@ if (nrow(temporal_data) == 0) {
     mutate(
       Collection_year_temporal_group = make_temporal_year_factor(Collection_year_temporal_group)
     ) %>%
-    arrange(Collection_year_temporal_group)
-
-  temporal_summary <- temporal_summary %>%
+    arrange(Collection_year_temporal_group) %>%
     rowwise() %>%
     mutate(
       prop_O157H7_among_all_cattle = n_O157H7 / total_cattle_genomes,
@@ -385,59 +385,18 @@ if (nrow(temporal_data) == 0) {
     dpi = 600
   )
 
-  # ------------------------------------------------------------
-  # Plot 1b: Temporal O157:H7 proportion line plot with 95% CI
-  # ------------------------------------------------------------
-  #
-  # CI method:
-  #   Exact binomial confidence intervals from stats::binom.test.
-  #
-  # Denominator:
-  #   All cattle genomes in data6 for each temporal group.
-  #
-  # ------------------------------------------------------------
-
-  temporal_summary_line <- temporal_summary %>%
-    mutate(
-      year_index = as.integer(Collection_year_temporal_group),
-      year_label = as.character(Collection_year_temporal_group)
-    )
-
-  p_line_ci <- ggplot(
-    temporal_summary_line,
+  p_line <- ggplot(
+    temporal_summary,
     aes(
-      x = year_index,
-      y = prop_O157H7_among_all_cattle
+      x = as.integer(Collection_year_temporal_group),
+      y = prop_O157H7_among_all_cattle,
+      group = 1
     )
   ) +
-    geom_linerange(
-      aes(
-        ymin = prop_O157H7_ci_low,
-        ymax = prop_O157H7_ci_high
-      ),
-      linewidth = 0.9,
-      alpha = 0.85
-    ) +
-    geom_errorbar(
-      aes(
-        ymin = prop_O157H7_ci_low,
-        ymax = prop_O157H7_ci_high
-      ),
-      width = 0.22,
-      linewidth = 0.7,
-      alpha = 0.85
-    ) +
-    geom_line(
-      aes(group = 1),
-      linewidth = 0.75,
-      alpha = 0.85
-    ) +
-    geom_point(
-      size = 2.8
-    ) +
+    geom_line(linewidth = 0.8) +
+    geom_point(size = 2.8) +
     geom_text(
       aes(
-        y = pmin(prop_O157H7_ci_high + 0.055, 1.08),
         label = paste0(
           n_O157H7,
           "/",
@@ -445,23 +404,23 @@ if (nrow(temporal_data) == 0) {
         )
       ),
       angle = 90,
-      vjust = -0.15,
+      vjust = -0.55,
       hjust = 0.5,
       size = 2.8
     ) +
     scale_x_continuous(
-      breaks = temporal_summary_line$year_index,
-      labels = temporal_summary_line$year_label
+      breaks = as.integer(temporal_summary$Collection_year_temporal_group),
+      labels = as.character(temporal_summary$Collection_year_temporal_group)
     ) +
     scale_y_continuous(
       labels = percent_format(accuracy = 1),
-      limits = c(0, 1.12),
-      expand = expansion(mult = c(0, 0))
+      limits = c(0, 1.05),
+      expand = expansion(mult = c(0.02, 0.12))
     ) +
     coord_cartesian(clip = "off") +
     labs(
       title = "Temporal trend of O157:H7 among cattle E. coli genomes",
-      subtitle = "Points show O157:H7 proportion; vertical bars show 95% exact binomial confidence intervals",
+      subtitle = "Points show O157:H7 proportion by collection year",
       x = "Collection year",
       y = "O157:H7 proportion among cattle genomes",
       caption = "Years <=2000 grouped. Labels show O157:H7 count / total cattle genomes per temporal group."
@@ -469,19 +428,19 @@ if (nrow(temporal_data) == 0) {
     theme_publication(base_size = 12) +
     theme(
       axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
-      plot.margin = margin(t = 35, r = 20, b = 10, l = 10)
+      plot.margin = margin(t = 25, r = 20, b = 10, l = 10)
     )
 
   ggsave(
-    file.path(figure_dir, "cattle_O157H7_temporal_proportion_line_CI.pdf"),
-    p_line_ci,
+    file.path(figure_dir, "cattle_O157H7_temporal_proportion_line.pdf"),
+    p_line,
     width = 13,
     height = 7
   )
 
   ggsave(
-    file.path(figure_dir, "cattle_O157H7_temporal_proportion_line_CI.png"),
-    p_line_ci,
+    file.path(figure_dir, "cattle_O157H7_temporal_proportion_line.png"),
+    p_line,
     width = 13,
     height = 7,
     dpi = 600
