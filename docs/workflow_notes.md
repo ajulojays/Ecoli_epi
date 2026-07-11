@@ -58,3 +58,39 @@ The R script uses explicit labels:
 | O-type missing, H-type present | `No_O_call:Htype` |
 | Complete call | `Otype:Htype` |
 
+
+## Script 01 figure outputs
+
+Script 01 now generates publication-ready figure outputs in:
+
+```text
+~/epi/marker_screen/ectyper_results/figures/
+```
+
+The figure logic is source-group specific.
+
+For each source group:
+
+1. The top 10 called serotypes are retained individually.
+2. All other called serotypes are collapsed into `Other serotypes`.
+3. Genomes without a serotype call are retained as `No serotype call`.
+
+This produces:
+
+```text
+pie_top10_serotypes_<source_group>.pdf
+pie_top10_serotypes_<source_group>.png
+temporal_stacked_counts_top10_serotypes_<source_group>.pdf
+temporal_stacked_counts_top10_serotypes_<source_group>.png
+temporal_stacked_percent_top10_serotypes_<source_group>.pdf
+temporal_stacked_percent_top10_serotypes_<source_group>.png
+```
+
+Multi-page combined PDFs are also created:
+
+```text
+pie_top10_serotypes_all_source_groups.pdf
+temporal_stacked_counts_top10_serotypes_all_source_groups.pdf
+temporal_stacked_percent_top10_serotypes_all_source_groups.pdf
+```
+

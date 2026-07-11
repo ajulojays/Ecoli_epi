@@ -17,3 +17,6 @@ dependencies:
   - r-dplyr
   - r-stringr
   - r-tidyr
+  - r-ggplot2
+  - r-scales
+  - r-forcats
