@@ -1,0 +1,55 @@
+# ============================================================
+# Large data files and generated outputs should NOT be committed
+# ============================================================
+
+# Raw metadata / large working metadata
+*.csv
+*.tsv
+*.xlsx
+
+# Allow tiny example files if needed later
+!examples/*.csv
+!examples/*.tsv
+
+# Genome files
+*.fna
+*.fa
+*.fasta
+*.fq
+*.fastq
+*.gz
+*.zip
+
+# ECtyper output folders and batch work folders
+ectyper_work/
+ectyper_work_retry/
+ectyper_work_retry_small/
+ectyper_batches/
+ectyper_retry_chunks/
+ectyper_results/
+ectyper_logs/
+
+# QC / annotation / pangenome / phylogeny outputs
+prokka_out/
+panaroo_out/
+roary_out/
+checkm2_out/
+gff/
+fastas/
+genomes/
+core_snp/
+iqtree_out/
+gubbins_out/
+
+# System / editor files
+.DS_Store
+*.swp
+*.swo
+.Rhistory
+.RData
+.Rproj.user/
+
+# Logs
+*.log
+*.err
+*.out

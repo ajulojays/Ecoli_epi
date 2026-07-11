@@ -1,0 +1,17 @@
+name: ecoli-ectyper-workflow
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.11
+  - ncbi-datasets-cli
+  - ectyper
+  - unzip
+  - pigz
+  - csvkit
+  - jq
+  - r-base
+  - r-readr
+  - r-dplyr
+  - r-stringr
+  - r-tidyr
