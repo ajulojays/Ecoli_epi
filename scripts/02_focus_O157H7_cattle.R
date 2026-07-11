@@ -293,6 +293,19 @@ if (nrow(temporal_data) == 0) {
     ) %>%
     arrange(Collection_year_temporal_group)
 
+  temporal_summary <- temporal_summary %>%
+    rowwise() %>%
+    mutate(
+      prop_O157H7_among_all_cattle = n_O157H7 / total_cattle_genomes,
+      ci = list(stats::binom.test(n_O157H7, total_cattle_genomes)$conf.int),
+      prop_O157H7_ci_low = ci[[1]][1],
+      prop_O157H7_ci_high = ci[[1]][2],
+      pct_O157H7_ci_low = round(100 * prop_O157H7_ci_low, 3),
+      pct_O157H7_ci_high = round(100 * prop_O157H7_ci_high, 3)
+    ) %>%
+    select(-ci) %>%
+    ungroup()
+
   write_csv(temporal_summary, out_summary)
 
   temporal_long_counts <- temporal_data %>%
@@ -372,6 +385,100 @@ if (nrow(temporal_data) == 0) {
     dpi = 600
   )
 
+  # ------------------------------------------------------------
+  # Plot 1b: Temporal O157:H7 proportion line plot with 95% CI
+  # ------------------------------------------------------------
+  #
+  # CI method:
+  #   Exact binomial confidence intervals from stats::binom.test.
+  #
+  # Denominator:
+  #   All cattle genomes in data6 for each temporal group.
+  #
+  # ------------------------------------------------------------
+
+  temporal_summary_line <- temporal_summary %>%
+    mutate(
+      year_index = as.integer(Collection_year_temporal_group),
+      year_label = as.character(Collection_year_temporal_group)
+    )
+
+  p_line_ci <- ggplot(
+    temporal_summary_line,
+    aes(
+      x = year_index,
+      y = prop_O157H7_among_all_cattle
+    )
+  ) +
+    geom_ribbon(
+      aes(
+        ymin = prop_O157H7_ci_low,
+        ymax = prop_O157H7_ci_high,
+        group = 1
+      ),
+      alpha = 0.18
+    ) +
+    geom_line(linewidth = 0.8) +
+    geom_point(size = 2.2) +
+    geom_errorbar(
+      aes(
+        ymin = prop_O157H7_ci_low,
+        ymax = prop_O157H7_ci_high
+      ),
+      width = 0.15,
+      linewidth = 0.4
+    ) +
+    geom_text(
+      aes(
+        label = paste0(
+          "n=",
+          n_O157H7,
+          "/",
+          total_cattle_genomes
+        )
+      ),
+      angle = 90,
+      vjust = -0.55,
+      hjust = 0.5,
+      size = 2.8
+    ) +
+    scale_x_continuous(
+      breaks = temporal_summary_line$year_index,
+      labels = temporal_summary_line$year_label
+    ) +
+    scale_y_continuous(
+      labels = percent_format(accuracy = 1),
+      expand = expansion(mult = c(0.02, 0.18))
+    ) +
+    coord_cartesian(clip = "off") +
+    labs(
+      title = "Temporal trend of O157:H7 among cattle E. coli genomes",
+      subtitle = "Points show annual proportion; shaded band and error bars show 95% exact binomial CI",
+      x = "Collection year",
+      y = "O157:H7 proportion among cattle genomes",
+      caption = "Years <=2000 grouped. Labels show O157:H7 count / total cattle genomes per temporal group."
+    ) +
+    theme_publication(base_size = 12) +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+      plot.margin = margin(t = 25, r = 20, b = 10, l = 10)
+    )
+
+  ggsave(
+    file.path(figure_dir, "cattle_O157H7_temporal_proportion_line_CI.pdf"),
+    p_line_ci,
+    width = 13,
+    height = 7
+  )
+
+  ggsave(
+    file.path(figure_dir, "cattle_O157H7_temporal_proportion_line_CI.png"),
+    p_line_ci,
+    width = 13,
+    height = 7,
+    dpi = 600
+  )
+
   year_totals <- temporal_long_counts %>%
     distinct(Collection_year_temporal_group, year_total)
 
@@ -393,11 +500,11 @@ if (nrow(temporal_data) == 0) {
       ),
       inherit.aes = FALSE,
       angle = 90,
-      vjust = -0.35,
+      vjust = -0.95,
       hjust = 0.5,
       size = 3.0
     ) +
-    scale_y_continuous(expand = expansion(mult = c(0, 0.18))) +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.26))) +
     coord_cartesian(clip = "off") +
     labs(
       title = "Temporal counts of O157:H7 and non-O157:H7 cattle E. coli",
@@ -438,7 +545,7 @@ if (nrow(temporal_data) == 0) {
   ) +
     geom_col(width = 0.85, color = "gray20", linewidth = 0.15) +
     geom_text(
-      data = year_totals %>% mutate(label_y = 1.02),
+      data = year_totals %>% mutate(label_y = 1.08),
       aes(
         x = Collection_year_temporal_group,
         y = label_y,
@@ -446,13 +553,13 @@ if (nrow(temporal_data) == 0) {
       ),
       inherit.aes = FALSE,
       angle = 90,
-      vjust = -0.20,
+      vjust = -0.65,
       hjust = 0.5,
       size = 3.0
     ) +
     scale_y_continuous(
       labels = percent_format(accuracy = 1),
-      limits = c(0, 1.12),
+      limits = c(0, 1.20),
       expand = expansion(mult = c(0, 0))
     ) +
     coord_cartesian(clip = "off") +

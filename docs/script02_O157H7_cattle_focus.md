@@ -43,3 +43,20 @@ O157:H7 categories:
 - No serotype call
 
 No serotype call is retained separately so untyped genomes are not incorrectly counted as non-O157:H7.
+
+Additional figure update:
+
+- The vertical n labels on temporal stacked bar plots are positioned higher above the bars.
+- Script 02 also generates a temporal O157:H7 proportion line plot with 95% exact binomial confidence intervals.
+
+Additional figure files:
+
+- figures/cattle_O157H7_temporal_proportion_line_CI.pdf
+- figures/cattle_O157H7_temporal_proportion_line_CI.png
+
+The line plot uses:
+
+- numerator: number of O157:H7 cattle genomes per temporal group
+- denominator: all cattle genomes in data6 per temporal group
+- CI method: exact binomial confidence interval from stats::binom.test
+
