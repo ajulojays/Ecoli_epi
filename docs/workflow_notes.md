@@ -94,3 +94,24 @@ temporal_stacked_counts_top10_serotypes_all_source_groups.pdf
 temporal_stacked_percent_top10_serotypes_all_source_groups.pdf
 ```
 
+
+## Script 01 figure update
+
+The temporal stacked bar plots now group all collection years <=2000 as one temporal category.
+
+Each temporal bar includes a vertical total genome count label:
+
+```text
+n=<number_of_genomes>
+```
+
+Script 01 also generates O157:H7-focused pie charts by source group. These compare:
+
+```text
+O157:H7
+Non-O157:H7
+No serotype call
+```
+
+The no-serotype group is retained separately to avoid incorrectly forcing untyped genomes into the non-O157:H7 category.
+
