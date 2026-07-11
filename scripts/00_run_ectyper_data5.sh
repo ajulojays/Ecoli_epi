@@ -41,30 +41,46 @@ echo "=== ECTYPER BATCH RUN STARTED: $(date) ==="
 
 source ~/.bashrc
 eval "$(conda shell.bash hook)"
-conda activate "$HOME/epi/envs/epi"
+
+# Allow users to override the conda environment path.
+# Default used in the original project:
+#   ~/epi/envs/epi
+CONDA_ENV_PATH="${CONDA_ENV_PATH:-$HOME/epi/envs/epi}"
+
+if [[ ! -d "$CONDA_ENV_PATH" ]]; then
+  echo "[ERROR] Conda environment not found: $CONDA_ENV_PATH"
+  echo "[HINT] Create it with:"
+  echo "       conda env create -p $CONDA_ENV_PATH -f env/environment.yml"
+  exit 1
+fi
+
+conda activate "$CONDA_ENV_PATH"
 
 # ============================================================
 # 2. Configuration
 # ============================================================
 
-WD="$HOME/epi/marker_screen"
+# Allow users to override the large working directory.
+# Default used in the original project:
+#   ~/epi/marker_screen
+WD="${ECOLI_EPI_WORKDIR:-$HOME/epi/marker_screen}"
 
 METADATA_FILE="$WD/data5.csv"
 ASSEMBLY_COLUMN="Assembly"
 
 # Current full-run setting used in this project.
 # 4000 genomes per batch gives fewer batches but larger temporary disk use.
-BATCH_SIZE=4000
+BATCH_SIZE="${BATCH_SIZE:-4000}"
 
 # Number of CPU threads for ECtyper.
-THREADS=128
+THREADS="${THREADS:-128}"
 
 # MAX_GENOMES controls test vs full run:
 #   10   = quick test
 #   100  = larger test
 #   4000 = one full batch
 #   0    = all genomes
-MAX_GENOMES=0
+MAX_GENOMES="${MAX_GENOMES:-0}"
 
 BATCH_DIR="$WD/ectyper_batches"
 WORK_DIR="$WD/ectyper_work"

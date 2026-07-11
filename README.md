@@ -122,3 +122,63 @@ No_O_call:H7
 
 This prevents hidden bias from removing genomes with incomplete typing.
 
+---
+
+## Quickstart for a new user
+
+Clone the repository:
+
+```bash
+git clone https://github.com/ajulojays/Ecoli_epi.git
+cd Ecoli_epi
+```
+
+Create the environment:
+
+```bash
+conda env create -p ~/epi/envs/epi -f env/environment.yml
+conda activate ~/epi/envs/epi
+```
+
+Prepare the working directory:
+
+```bash
+mkdir -p ~/epi/marker_screen
+cp /path/to/data5.csv ~/epi/marker_screen/data5.csv
+```
+
+Run a 10-genome test:
+
+```bash
+ECOLI_EPI_WORKDIR=~/epi/marker_screen \
+CONDA_ENV_PATH=~/epi/envs/epi \
+BATCH_SIZE=100 \
+THREADS=8 \
+MAX_GENOMES=10 \
+bash scripts/00_run_ectyper_data5.sh
+```
+
+Run the full workflow:
+
+```bash
+ECOLI_EPI_WORKDIR=~/epi/marker_screen \
+CONDA_ENV_PATH=~/epi/envs/epi \
+BATCH_SIZE=1000 \
+THREADS=32 \
+MAX_GENOMES=0 \
+bash scripts/00_run_ectyper_data5.sh
+```
+
+Summarize serotypes by source group:
+
+```bash
+ECOLI_EPI_WORKDIR=~/epi/marker_screen \
+Rscript scripts/01_summarize_ectyper_serotypes_by_source_group.R
+```
+
+For detailed setup instructions, see:
+
+```text
+docs/00_environment_setup.md
+```
+

@@ -51,7 +51,10 @@ suppressPackageStartupMessages({
   library(tidyr)
 })
 
-wd <- path.expand("~/epi/marker_screen")
+# Allow users to override the large working directory.
+# Default used in the original project:
+#   ~/epi/marker_screen
+wd <- path.expand(Sys.getenv("ECOLI_EPI_WORKDIR", unset = "~/epi/marker_screen"))
 
 metadata_file <- file.path(wd, "data5.csv")
 ectyper_file  <- file.path(wd, "ectyper_results", "ectyper_output_all.tsv")

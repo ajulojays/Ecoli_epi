@@ -4,6 +4,8 @@ channels:
   - bioconda
 dependencies:
   - python=3.11
+  - git
+  - gh
   - ncbi-datasets-cli
   - ectyper
   - unzip
