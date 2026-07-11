@@ -82,12 +82,18 @@ THREADS="${THREADS:-128}"
 #   0    = all genomes
 MAX_GENOMES="${MAX_GENOMES:-0}"
 
-BATCH_DIR="$WD/ectyper_batches"
-WORK_DIR="$WD/ectyper_work"
-RESULTS_DIR="$WD/ectyper_results"
-LOGS="$WD/ectyper_logs"
+RESULTS_ROOT="$WD/results"
+SCRIPT00_DIR="$RESULTS_ROOT/00_ectyper_batch_run"
 
-mkdir -p "$BATCH_DIR" "$WORK_DIR" "$RESULTS_DIR" "$LOGS"
+BATCH_DIR="$SCRIPT00_DIR/batches"
+WORK_DIR="$SCRIPT00_DIR/work"
+RESULTS_DIR="$SCRIPT00_DIR/tables"
+BATCH_OUTPUT_DIR="$SCRIPT00_DIR/batch_outputs"
+MANIFEST_DIR="$SCRIPT00_DIR/manifests"
+ARCHIVE_DIR="$SCRIPT00_DIR/archives"
+LOGS="$SCRIPT00_DIR/logs"
+
+mkdir -p "$BATCH_DIR" "$WORK_DIR" "$RESULTS_DIR" "$BATCH_OUTPUT_DIR" "$MANIFEST_DIR" "$ARCHIVE_DIR" "$LOGS"
 
 FINAL_OUTPUT="$RESULTS_DIR/ectyper_output_all.tsv"
 FINAL_MANIFEST="$RESULTS_DIR/ectyper_download_manifest_all.tsv"
@@ -135,9 +141,9 @@ fi
 
 echo "[STEP 0] Cleaning previous ECtyper batch outputs..."
 
-rm -f "$RESULTS_DIR"/batch_*_ectyper_output.tsv
-rm -f "$RESULTS_DIR"/batch_*_download_manifest.tsv
-rm -f "$RESULTS_DIR"/batch_*_ectyper_full_output.tar.gz
+rm -f "$BATCH_OUTPUT_DIR"/batch_*_ectyper_output.tsv
+rm -f "$MANIFEST_DIR"/batch_*_download_manifest.tsv
+rm -f "$ARCHIVE_DIR"/batch_*_ectyper_full_output.tar.gz
 rm -f "$FINAL_OUTPUT"
 rm -f "$FINAL_MANIFEST"
 rm -f "$FAILED_BATCHES"
@@ -216,8 +222,8 @@ for BATCH_FILE in "$BATCH_DIR"/batch_*; do
   BATCH_WORK="$WORK_DIR/$BATCH_NAME"
   BATCH_FASTA_DIR="$BATCH_WORK/fasta_inputs"
   BATCH_ECTYPER_OUT="$BATCH_WORK/ectyper_out"
-  BATCH_MANIFEST="$RESULTS_DIR/${BATCH_NAME}_download_manifest.tsv"
-  BATCH_OUTPUT_COPY="$RESULTS_DIR/${BATCH_NAME}_ectyper_output.tsv"
+  BATCH_MANIFEST="$MANIFEST_DIR/${BATCH_NAME}_download_manifest.tsv"
+  BATCH_OUTPUT_COPY="$BATCH_OUTPUT_DIR/${BATCH_NAME}_ectyper_output.tsv"
 
   batch_start=$SECONDS
 
@@ -331,7 +337,7 @@ for BATCH_FILE in "$BATCH_DIR"/batch_*; do
     awk -v batch="$BATCH_NAME" 'BEGIN{OFS="\t"} NR>1{print batch,$0}' "$BATCH_OUTPUT_COPY" >> "$FINAL_OUTPUT"
   fi
 
-  tar -czf "$RESULTS_DIR/${BATCH_NAME}_ectyper_full_output.tar.gz" -C "$BATCH_WORK" "ectyper_out"
+  tar -czf "$ARCHIVE_DIR/${BATCH_NAME}_ectyper_full_output.tar.gz" -C "$BATCH_WORK" "ectyper_out"
 
   echo "[BATCH $BATCH_NAME] Cleaning batch workspace..."
   rm -rf "$BATCH_WORK"

@@ -115,3 +115,17 @@ No serotype call
 
 The no-serotype group is retained separately to avoid incorrectly forcing untyped genomes into the non-O157:H7 category.
 
+
+## Organized result folders
+
+The working analysis directory now uses script-numbered result folders:
+
+  results/00_ectyper_batch_run
+  results/01_serotype_summary
+  results/02_downstream_selection
+
+Script 00 output belongs in results/00_ectyper_batch_run.
+
+Script 01 output belongs in results/01_serotype_summary.
+
+This prevents ECtyper batch files, summary tables, and figures from being mixed in one folder.
