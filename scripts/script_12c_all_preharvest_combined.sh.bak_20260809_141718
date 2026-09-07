@@ -1,0 +1,343 @@
+#!/bin/bash
+# script_12c_all_preharvest_combined.sh
+# Legacy-style Panaroo + IQ-TREE pipeline for all 704 non-dairy cattle pre-harvest genomes
+# Uses same Panaroo calling style as the old working 12B script.
+
+set -e
+
+# ==========================================
+# 1. GLOBAL PATHS & ENVIRONMENT DEFINITIONS
+# ==========================================
+
+BASE_DIR="/home/samuelajulo/epi/Ecoli_epi"
+METADATA_CSV="/home/samuelajulo/epi/data6a.csv"
+BAKTA_DIR="${BASE_DIR}/results/bakta"
+RESULTS_DIR="${BASE_DIR}/results/12c_all_preharvest_combined"
+
+PANAROO_ENV="panaroo_env"
+IQTREE_ENV="iqtree_env"
+
+THREADS=64
+CORE_THRESHOLD=0.95
+EXPECTED_COUNT=704
+
+source ~/miniforge3/etc/profile.d/conda.sh
+
+echo "=========================================================="
+echo " Running legacy-compatible 12C pipeline"
+echo " Target: Beef + Cattle-unspecified, Pre-harvest only"
+echo " Expected genomes: ${EXPECTED_COUNT}"
+echo "=========================================================="
+
+# ==========================================
+# 2. CLEAN OLD 12C OUTPUTS
+# ==========================================
+
+echo ""
+echo "----------------------------------------------------------"
+echo " Cleaning old 12C outputs"
+echo "----------------------------------------------------------"
+
+pkill -f "script_12c_all_preharvest_combined.sh" 2>/dev/null || true
+pkill -f "panaroo.*12c_all_preharvest_combined" 2>/dev/null || true
+pkill -f "iqtree.*all_preharvest_704_core_phylo" 2>/dev/null || true
+
+rm -rf "$RESULTS_DIR"
+rm -f /home/samuelajulo/epi/Ecoli_epi/scripts/run_12c_combined.log
+find /dev/shm -maxdepth 1 -type d -name "panaroo_12c_${USER}_*" -exec rm -rf {} + 2>/dev/null || true
+
+mkdir -p "$RESULTS_DIR"
+
+echo "[DONE] Old 12C directory cleaned."
+
+# ==========================================
+# 3. PRE-FLIGHT CHECKS
+# ==========================================
+
+echo ""
+echo "----------------------------------------------------------"
+echo " Running pre-flight checks"
+echo "----------------------------------------------------------"
+
+ERRORS=0
+
+if [ ! -f "$METADATA_CSV" ]; then
+    echo "[ERROR] Metadata file not found: $METADATA_CSV"
+    ERRORS=$((ERRORS + 1))
+else
+    echo "[OK] Metadata file found."
+
+    if ! python3 -c "import pandas as pd; df=pd.read_csv('$METADATA_CSV'); exit(0 if 'Production_system' in df.columns and 'Supply_chain_stage' in df.columns and 'Assembly' in df.columns else 1)" 2>/dev/null; then
+        echo "[ERROR] Required columns missing: Assembly, Production_system, or Supply_chain_stage"
+        ERRORS=$((ERRORS + 1))
+    else
+        echo "[OK] Required metadata columns verified."
+    fi
+fi
+
+if [ ! -d "$BAKTA_DIR" ]; then
+    echo "[ERROR] Bakta directory does not exist: $BAKTA_DIR"
+    ERRORS=$((ERRORS + 1))
+else
+    GFF_COUNT=$(find "$BAKTA_DIR" -mindepth 2 -maxdepth 2 -type f -name "*.gff3" | wc -l || echo 0)
+    if [ "$GFF_COUNT" -eq 0 ]; then
+        echo "[ERROR] Bakta directory contains zero .gff3 files."
+        ERRORS=$((ERRORS + 1))
+    else
+        echo "[OK] Bakta directory verified. Found $GFF_COUNT .gff3 files."
+    fi
+fi
+
+if ! conda env list | grep -q "$PANAROO_ENV"; then
+    echo "[ERROR] Conda environment '$PANAROO_ENV' not found."
+    ERRORS=$((ERRORS + 1))
+else
+    echo "[OK] Conda environment '$PANAROO_ENV' exists."
+
+    if ! conda run -n "$PANAROO_ENV" which panaroo >/dev/null 2>&1; then
+        echo "[ERROR] panaroo not executable inside '$PANAROO_ENV'."
+        ERRORS=$((ERRORS + 1))
+    else
+        echo "[OK] panaroo verified."
+    fi
+
+    if ! conda run -n "$PANAROO_ENV" which mafft >/dev/null 2>&1; then
+        echo "[ERROR] mafft not executable inside '$PANAROO_ENV'."
+        ERRORS=$((ERRORS + 1))
+    else
+        echo "[OK] mafft verified."
+    fi
+fi
+
+if ! conda env list | grep -q "$IQTREE_ENV"; then
+    echo "[ERROR] Conda environment '$IQTREE_ENV' not found."
+    ERRORS=$((ERRORS + 1))
+else
+    echo "[OK] Conda environment '$IQTREE_ENV' exists."
+
+    if ! conda run -n "$IQTREE_ENV" bash -c "which iqtree || which iqtree2" >/dev/null 2>&1; then
+        echo "[ERROR] iqtree/iqtree2 not executable inside '$IQTREE_ENV'."
+        ERRORS=$((ERRORS + 1))
+    else
+        echo "[OK] iqtree/iqtree2 verified."
+    fi
+fi
+
+if [ "$ERRORS" -gt 0 ]; then
+    echo ""
+    echo "[FATAL] Pre-flight checks failed."
+    exit 1
+fi
+
+echo "[SUCCESS] All pre-flight checks passed."
+
+# ==========================================
+# 4. DEFINE OUTPUT PATHS
+# ==========================================
+
+PANAROO_OUT="${RESULTS_DIR}/panaroo"
+IQTREE_OUT="${RESULTS_DIR}/iqtree"
+GFF_LIST_FILE="${RESULTS_DIR}/panaroo_gff_list.txt"
+TARGET_METADATA="${RESULTS_DIR}/target_metadata_704_preharvest_non_dairy.csv"
+MAPPING_MANIFEST="${RESULTS_DIR}/gff_mapping_manifest_704.csv"
+LOG_DIR="${RESULTS_DIR}/logs"
+
+mkdir -p "$PANAROO_OUT"
+mkdir -p "$IQTREE_OUT"
+mkdir -p "$LOG_DIR"
+
+# ==========================================
+# 5. EXTRACT EXACT 704 SAMPLE SET
+# ==========================================
+
+echo ""
+echo "----------------------------------------------------------"
+echo " Extracting 704 Beef + Cattle-unspecified Pre-harvest genomes"
+echo "----------------------------------------------------------"
+
+python3 - <<PYEOF
+import pandas as pd
+import sys
+
+metadata_csv = "$METADATA_CSV"
+target_metadata = "$TARGET_METADATA"
+expected = int("$EXPECTED_COUNT")
+
+df = pd.read_csv(metadata_csv)
+
+required = ["Assembly", "Production_system", "Supply_chain_stage"]
+missing = [c for c in required if c not in df.columns]
+if missing:
+    print(f"[ERROR] Missing columns: {missing}")
+    sys.exit(1)
+
+def clean_stage(x):
+    s = str(x).strip().lower()
+    if "post" in s:
+        return "Post-harvest"
+    if "peri" in s or "per-harvest" in s or "harvest-interface" in s or "interface" in s:
+        return "Peri-harvest"
+    return "Pre-harvest"
+
+def clean_prod(x):
+    s = str(x).strip().lower()
+    if "beef" in s:
+        return "Beef"
+    if "dairy" in s:
+        return "Dairy"
+    return "Cattle-unspecified"
+
+df["stage_12c"] = df["Supply_chain_stage"].apply(clean_stage)
+df["prod_12c"] = df["Production_system"].apply(clean_prod)
+
+subset = df[
+    (df["stage_12c"] == "Pre-harvest") &
+    (df["prod_12c"].isin(["Beef", "Cattle-unspecified"]))
+].copy()
+
+subset = subset.drop_duplicates(subset=["Assembly"])
+
+subset.to_csv(target_metadata, index=False)
+
+print(f"[INFO] Target metadata count: {len(subset)}")
+print(subset["prod_12c"].value_counts().to_string())
+
+if len(subset) != expected:
+    print(f"[ERROR] Expected {expected} genomes, found {len(subset)}.")
+    sys.exit(1)
+
+for idx in subset["Assembly"].dropna():
+    print(str(idx).strip(), file=open("$RESULTS_DIR/target_sample_ids.txt", "a"))
+PYEOF
+
+TOTAL_METADATA_COUNT=$(grep -v '^$' "$RESULTS_DIR/target_sample_ids.txt" | wc -l || echo 0)
+
+echo "[INFO] Target sample IDs: $TOTAL_METADATA_COUNT"
+
+if [ "$TOTAL_METADATA_COUNT" -ne "$EXPECTED_COUNT" ]; then
+    echo "[FATAL] Expected $EXPECTED_COUNT sample IDs but found $TOTAL_METADATA_COUNT."
+    exit 1
+fi
+
+# ==========================================
+# 6. MAP SAMPLE IDS TO BAKTA GFF3 FILES
+# ==========================================
+
+echo ""
+echo "----------------------------------------------------------"
+echo " Mapping sample IDs to Bakta GFF3 files"
+echo "----------------------------------------------------------"
+
+echo "sample_id,gff_path,mapping_status" > "$MAPPING_MANIFEST"
+> "$GFF_LIST_FILE"
+
+while read -r SAMPLE_ID; do
+    [ -z "$SAMPLE_ID" ] && continue
+    SAMPLE_ID=$(echo "$SAMPLE_ID" | tr -d '\r')
+
+    SRC_GFF="${BAKTA_DIR}/${SAMPLE_ID}/${SAMPLE_ID}.gff3"
+
+    if [ -f "$SRC_GFF" ]; then
+        echo "$SRC_GFF" >> "$GFF_LIST_FILE"
+        echo "${SAMPLE_ID},${SRC_GFF},mapped" >> "$MAPPING_MANIFEST"
+    else
+        echo "${SAMPLE_ID},,missing_gff" >> "$MAPPING_MANIFEST"
+    fi
+done < "$RESULTS_DIR/target_sample_ids.txt"
+
+MAPPED_GFF_COUNT=$(wc -l < "$GFF_LIST_FILE" || echo 0)
+
+echo "[INFO] Successfully mapped $MAPPED_GFF_COUNT / $TOTAL_METADATA_COUNT annotations on disk."
+
+if [ "$MAPPED_GFF_COUNT" -ne "$EXPECTED_COUNT" ]; then
+    echo "[FATAL] Expected $EXPECTED_COUNT mapped GFF3 files but found $MAPPED_GFF_COUNT."
+    echo "[INFO] Check missing files here:"
+    echo "$MAPPING_MANIFEST"
+    exit 1
+fi
+
+echo "[INFO] First 5 GFF paths:"
+head -n 5 "$GFF_LIST_FILE"
+
+# ==========================================
+# 7. RUN PANAROO EXACTLY LIKE OLD WORKING SCRIPT
+# ==========================================
+
+echo ""
+echo "----------------------------------------------------------"
+echo " Running Panaroo using old working style"
+echo "----------------------------------------------------------"
+
+conda activate "$PANAROO_ENV"
+
+echo "[INFO] Panaroo version:"
+panaroo --version || true
+
+echo "[INFO] Running Panaroo Core Genome Alignment..."
+echo "[INFO] Using GFF list file directly:"
+echo "$GFF_LIST_FILE"
+
+panaroo -i "$GFF_LIST_FILE" \
+        -o "$PANAROO_OUT" \
+        --clean-mode sensitive \
+        --remove-invalid-genes \
+        -a core \
+        --aligner mafft \
+        --core_threshold "$CORE_THRESHOLD" \
+        -t "$THREADS" \
+        2>&1 | tee "$LOG_DIR/panaroo_run.log"
+
+if [ -s "${PANAROO_OUT}/core_gene_alignment_filtered.aln" ]; then
+    CORE_ALIGNMENT="${PANAROO_OUT}/core_gene_alignment_filtered.aln"
+else
+    CORE_ALIGNMENT="${PANAROO_OUT}/core_gene_alignment.aln"
+fi
+
+if [ ! -s "$CORE_ALIGNMENT" ]; then
+    echo "[FATAL] Panaroo failed to output a core alignment file."
+    exit 1
+fi
+
+echo "[SUCCESS] Found alignment file:"
+ls -lh "$CORE_ALIGNMENT"
+
+# ==========================================
+# 8. RUN IQ-TREE
+# ==========================================
+
+echo ""
+echo "----------------------------------------------------------"
+echo " Running IQ-TREE"
+echo "----------------------------------------------------------"
+
+conda activate "$IQTREE_ENV"
+
+cd "$IQTREE_OUT"
+
+IQTREE_CMD="iqtree"
+if ! command -v iqtree >/dev/null 2>&1 && command -v iqtree2 >/dev/null 2>&1; then
+    IQTREE_CMD="iqtree2"
+fi
+
+echo "[INFO] IQ-TREE command: $IQTREE_CMD"
+
+$IQTREE_CMD -s "$CORE_ALIGNMENT" \
+            -m MFP \
+            -bb 1000 \
+            -nt AUTO \
+            -ntmax "$THREADS" \
+            -pre "all_preharvest_704_core_phylo" \
+            2>&1 | tee "$LOG_DIR/iqtree_run.log"
+
+echo ""
+echo "=========================================================="
+echo " 12C legacy-compatible combined pipeline completed"
+echo "=========================================================="
+echo "[RESULTS] $RESULTS_DIR"
+echo "[PANAROO] $PANAROO_OUT"
+echo "[IQTREE]  $IQTREE_OUT"
+
+find "$RESULTS_DIR" -maxdepth 3 -type f \( -name "*.csv" -o -name "*.txt" -o -name "*.aln" -o -name "*.treefile" -o -name "*.log" \) | sort
+
+echo ""
+echo "[DONE] All 704 non-dairy cattle pre-harvest genomes processed."

@@ -262,6 +262,7 @@ if [[ "$RUN_CHECKM2" == "true" ]]; then
     --extension fna \
     --output-directory "$CHECKM2_OUT_DIR" \
     --threads "$THREADS" \
+    --database_path "/home/samuelajulo/epi/checkm2_db/CheckM2_database/DIAMOND_DATABASES.dmnd" \
     --force \
     > "$LOG_DIR/checkm2_run.log" 2>&1
 

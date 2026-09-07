@@ -54,7 +54,7 @@ checkm2_file  <- file.path(qc04_dir, "checkm2/quality_report.tsv")
 # =========================
 # QC thresholds
 # =========================
-max_checkm2_contamination <- as.numeric(Sys.getenv("MAX_CHECKM2_CONTAMINATION", unset = "1.0"))
+max_checkm2_contamination <- as.numeric(Sys.getenv("MAX_CHECKM2_CONTAMINATION", unset = "5.0"))
 min_checkm2_completeness  <- as.numeric(Sys.getenv("MIN_CHECKM2_COMPLETENESS", unset = "95.0"))
 min_total_bp              <- as.numeric(Sys.getenv("MIN_TOTAL_BP", unset = "4500000"))
 max_total_bp              <- as.numeric(Sys.getenv("MAX_TOTAL_BP", unset = "6000000"))

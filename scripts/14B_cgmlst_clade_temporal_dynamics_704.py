@@ -1,0 +1,1056 @@
+#!/usr/bin/env python3
+
+import os
+import re
+import math
+import gzip
+import warnings
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import scipy.cluster.hierarchy as sch
+from scipy.spatial.distance import pdist, squareform
+
+warnings.filterwarnings("ignore")
+
+sns.set_theme(style="white", context="talk")
+plt.rcParams["savefig.dpi"] = 300
+
+# ==============================================================================
+# Script 14B: cgMLST Cluster Temporal Dynamics within Core-SNP Clades
+#
+# Goal:
+#   Focus only on the 704 non-dairy cattle pre-harvest genomes.
+#   Resolve each broad 12D clade into finer cgMLST clusters.
+#   Classify each cgMLST cluster as persistent-like, emerging-like,
+#   re-emergence-like / unsampled persistence, sporadic/minority, or limited.
+#
+# Main output:
+#   Clade
+#   cgMLST_cluster
+#   N_genomes
+#   First_year
+#   Last_year
+#   Year_span
+#   Years_detected
+#   Longest_detection_gap
+#   Consecutive_years_detected
+#   Median_within_cluster_SNP
+#   Max_within_cluster_SNP
+#   AMRFinder_feature_count_summary
+#   Temporal_category
+#   Evidence_level
+#   Interpretation
+# ==============================================================================
+
+BASE_DIR = "/home/samuelajulo/epi/Ecoli_epi"
+
+TARGET_METADATA = f"{BASE_DIR}/results/12c_all_preharvest_combined/target_metadata_704_preharvest_non_dairy.csv"
+METADATA_FALLBACK = "/home/samuelajulo/epi/data6a.csv"
+
+CGMLST_TSV = f"{BASE_DIR}/results/chewbbaca/cgmlst/core_95/cgMLST95.tsv"
+
+CLADE_CSV = f"{BASE_DIR}/results/12d_clade_analysis/all_preharvest_704_clades.csv"
+CLADE_COUNTS_CSV = f"{BASE_DIR}/results/12d_clade_analysis/clade_summary_counts.csv"
+
+PAIRWISE_SNP_CSV = f"{BASE_DIR}/results/12e_pairwise_snp_distance/tables/12E_pairwise_snp_distances_all_pairs.csv.gz"
+
+AMRFINDER_TSV = f"{BASE_DIR}/results/13_amrfinderplus/master_AMRFinder_report.tsv"
+
+MAIN_CGMLST_LEVEL = os.environ.get("MAIN_CGMLST_LEVEL", "HC10").upper()
+
+CGMLST_THRESHOLDS = {
+    "HC10": 10,
+    "HC20": 20,
+    "HC50": 50
+}
+
+OUTPUT_DIR = f"{BASE_DIR}/results/14B_cgmlst_clade_temporal_dynamics_704_{MAIN_CGMLST_LEVEL}"
+TABLE_DIR = f"{OUTPUT_DIR}/tables"
+MATRIX_DIR = f"{OUTPUT_DIR}/matrices"
+FIGURE_DIR = f"{OUTPUT_DIR}/figures"
+DEBUG_DIR = f"{OUTPUT_DIR}/debug"
+
+for d in [OUTPUT_DIR, TABLE_DIR, MATRIX_DIR, FIGURE_DIR, DEBUG_DIR]:
+    os.makedirs(d, exist_ok=True)
+
+EXPECTED_N = 704
+
+print("==========================================================")
+print(" Script 14B: cgMLST Cluster Temporal Dynamics within Clades")
+print("==========================================================")
+print(f"[INFO] Main cgMLST level: {MAIN_CGMLST_LEVEL}")
+print(f"[INFO] Output directory: {OUTPUT_DIR}")
+
+# ==============================================================================
+# Helpers
+# ==============================================================================
+
+def accession_root(x):
+    x = str(x)
+    x = os.path.basename(x)
+    m = re.search(r"(GC[AF]_[0-9]+)(?:\.[0-9]+)?", x)
+    if m:
+        return m.group(1)
+    x = re.sub(r"\.(fasta|fna|fa|faa|ffn|gff|gff3|aln|tsv|csv|gz)$", "", x)
+    return x.strip()
+
+def accession_version(x):
+    x = str(x)
+    x = os.path.basename(x)
+    m = re.search(r"(GC[AF]_[0-9]+\.[0-9]+)", x)
+    if m:
+        return m.group(1)
+    return accession_root(x)
+
+def pick_first_existing_col(df, candidates):
+    for c in candidates:
+        if c in df.columns:
+            return c
+    return None
+
+def extract_year(x):
+    if pd.isna(x):
+        return np.nan
+    m = re.search(r"(18|19|20)[0-9]{2}", str(x))
+    if m:
+        return int(m.group(0))
+    return np.nan
+
+def longest_consecutive_run(years):
+    years = sorted(set([int(y) for y in years if not pd.isna(y)]))
+    if len(years) == 0:
+        return 0
+    best = 1
+    cur = 1
+    for i in range(1, len(years)):
+        if years[i] == years[i - 1] + 1:
+            cur += 1
+            best = max(best, cur)
+        else:
+            cur = 1
+    return best
+
+def longest_detection_gap(years):
+    years = sorted(set([int(y) for y in years if not pd.isna(y)]))
+    if len(years) <= 1:
+        return 0
+    return max(np.diff(years)) - 1
+
+def years_string(years):
+    years = sorted(set([int(y) for y in years if not pd.isna(y)]))
+    return ";".join(map(str, years))
+
+def parse_cgmlst_value(v):
+    if pd.isna(v):
+        return -1
+    s = str(v).strip()
+    if s == "" or s.upper() in {"NA", "NAN", "-", "?", "LNF", "NIPH", "NIPHEM", "PLOT3", "PLOT5", "LOTSC", "ASM", "ALM"}:
+        return -1
+    m = re.match(r"^(?:INF-)?([0-9]+)$", s)
+    if m:
+        val = int(m.group(1))
+        return val if val > 0 else -1
+    return -1
+
+def cgmlst_distance_matrix(encoded):
+    arr = encoded.values.astype(np.int32)
+
+    def allele_diff(u, v):
+        valid = (u > 0) & (v > 0)
+        if not np.any(valid):
+            return float(arr.shape[1])
+        return float(np.sum(u[valid] != v[valid]))
+
+    dist = pdist(arr, metric=allele_diff)
+    return squareform(dist)
+
+def stable_cluster_labels(raw_labels, ids, prefix):
+    tmp = pd.DataFrame({"raw": raw_labels, "id": ids})
+    order = (
+        tmp.groupby("raw")
+        .agg(n=("id", "size"), min_id=("id", "min"))
+        .sort_values(["n", "min_id"], ascending=[False, True])
+        .reset_index()
+    )
+    mapping = {
+        row["raw"]: f"{prefix}_{i + 1:03d}"
+        for i, row in order.iterrows()
+    }
+    return [mapping[x] for x in raw_labels]
+
+def amr_summary_string(vals):
+    vals = [int(v) for v in vals if not pd.isna(v)]
+    if len(vals) == 0:
+        return "median=0; mean=0; range=0-0"
+    return (
+        f"median={np.median(vals):.1f}; "
+        f"mean={np.mean(vals):.2f}; "
+        f"range={np.min(vals)}-{np.max(vals)}"
+    )
+
+def classify_temporal(row, study_first, study_last):
+    n = row["N_genomes"]
+    years_detected = row["Years_detected"]
+    year_span = row["Year_span"]
+    gap = row["Longest_detection_gap"]
+    consecutive = row["Consecutive_years_detected"]
+    first_year = row["First_year"]
+    last_year = row["Last_year"]
+
+    if pd.isna(first_year) or pd.isna(last_year):
+        return "Unknown year"
+
+    total_span = max(1, study_last - study_first)
+    late_start_cutoff = study_last - max(2, math.ceil(total_span * 0.25))
+
+    if n <= 2 or years_detected <= 1:
+        return "Sporadic/minority"
+
+    if first_year >= late_start_cutoff and n >= 3 and years_detected >= 2:
+        return "Emerging-like"
+
+    if gap >= 5 and year_span >= 5 and years_detected >= 2:
+        return "Re-emergence-like / unsampled persistence"
+
+    if n >= 5 and year_span >= 5 and years_detected >= 3 and consecutive >= 2:
+        return "Persistent-like"
+
+    if n >= 3 and years_detected >= 2:
+        return "Repeated detection, limited temporal evidence"
+
+    return "Sporadic/minority"
+
+def evidence_level(row):
+    n = row["N_genomes"]
+    years_detected = row["Years_detected"]
+    median_snp = row.get("Median_within_cluster_SNP", np.nan)
+
+    has_snp = not pd.isna(median_snp)
+
+    if n >= 10 and years_detected >= 3 and has_snp:
+        return "Strong"
+    if n >= 5 and years_detected >= 2 and has_snp:
+        return "Moderate"
+    if n >= 3 and years_detected >= 2:
+        return "Limited"
+    return "Exploratory"
+
+def make_interpretation(row):
+    clade = row["Clade"]
+    cluster = row["cgMLST_cluster"]
+    n = int(row["N_genomes"])
+    cat = row["Temporal_category"]
+    first_year = row["First_year"]
+    last_year = row["Last_year"]
+    years_detected = int(row["Years_detected"])
+    gap = int(row["Longest_detection_gap"])
+    median_snp = row.get("Median_within_cluster_SNP", np.nan)
+
+    snp_part = (
+        f"median within-cluster SNP distance = {median_snp:.1f}"
+        if not pd.isna(median_snp)
+        else "within-cluster SNP distance not available"
+    )
+
+    if cat == "Persistent-like":
+        return (
+            f"{cluster} within {clade} was repeatedly detected from {int(first_year)} to {int(last_year)} "
+            f"across {years_detected} years with {snp_part}, supporting genomic evidence consistent "
+            f"with persistence or repeated circulation among sampled genomes."
+        )
+
+    if cat == "Emerging-like":
+        return (
+            f"{cluster} within {clade} was first observed late in the sampling period and detected "
+            f"across {years_detected} years, suggesting apparent emergence among sampled genomes; "
+            f"{snp_part}."
+        )
+
+    if cat == "Re-emergence-like / unsampled persistence":
+        return (
+            f"{cluster} within {clade} showed early and later detections separated by a longest "
+            f"observation gap of {gap} years, consistent with apparent re-emergence or unsampled "
+            f"persistence; {snp_part}."
+        )
+
+    if cat == "Sporadic/minority":
+        return (
+            f"{cluster} within {clade} contained {n} genome(s) with limited temporal representation, "
+            f"consistent with sporadic or minority detection among sampled genomes."
+        )
+
+    if cat == "Unknown year":
+        return (
+            f"{cluster} within {clade} could not be temporally classified because collection year "
+            f"metadata was missing or not parseable."
+        )
+
+    return (
+        f"{cluster} within {clade} was detected across {years_detected} years but does not meet stronger "
+        f"criteria for persistence-like, emerging-like, or re-emergence-like behavior; {snp_part}."
+    )
+
+# ==============================================================================
+# 1. Read target metadata and restrict to exact 704 genomes
+# ==============================================================================
+
+if os.path.exists(TARGET_METADATA):
+    meta = pd.read_csv(TARGET_METADATA)
+    print(f"[INFO] Using exact 704 target metadata: {TARGET_METADATA}")
+else:
+    meta = pd.read_csv(METADATA_FALLBACK)
+    print(f"[WARN] Exact target metadata not found. Falling back to: {METADATA_FALLBACK}")
+    if "Production_system" in meta.columns and "Supply_chain_stage" in meta.columns:
+        meta = meta[
+            meta["Production_system"].astype(str).isin(["Beef", "Cattle-unspecified"])
+            & (meta["Supply_chain_stage"].astype(str) == "Pre-harvest")
+        ].copy()
+
+assembly_col = pick_first_existing_col(meta, ["Assembly", "Tip_ID", "Isolate", "Sample", "sample"])
+if assembly_col is None:
+    raise SystemExit("[ERROR] Could not find Assembly/Tip_ID column in metadata.")
+
+meta["Accession_root"] = meta[assembly_col].apply(accession_root)
+meta["Accession_version"] = meta[assembly_col].apply(accession_version)
+
+year_col = pick_first_existing_col(
+    meta,
+    ["Collection_year", "Collection year", "collection_year", "Year", "year", "Collection date", "collection_date"]
+)
+
+if year_col is None:
+    for c in meta.columns:
+        if "year" in c.lower() or "date" in c.lower():
+            year_col = c
+            break
+
+print(f"[INFO] Detected year column: {year_col}")
+
+meta["Numeric_Year"] = meta[year_col].apply(extract_year) if year_col else np.nan
+meta = meta.drop_duplicates("Accession_root").copy()
+
+pd.DataFrame({
+    "metric": ["target_metadata_rows", "unique_target_accession_roots"],
+    "value": [len(meta), meta["Accession_root"].nunique()]
+}).to_csv(f"{DEBUG_DIR}/14B_target_metadata_debug.csv", index=False)
+
+# ==============================================================================
+# 2. Read 12D clades
+# ==============================================================================
+
+clades = pd.read_csv(CLADE_CSV)
+if "Tip_ID" not in clades.columns or "Clade" not in clades.columns:
+    raise SystemExit("[ERROR] 12D clade table must contain Tip_ID and Clade columns.")
+
+clades["Accession_root"] = clades["Tip_ID"].apply(accession_root)
+clades["Clade"] = clades["Clade"].astype(str)
+clades = clades.drop_duplicates("Accession_root")
+
+clade_counts = pd.read_csv(CLADE_COUNTS_CSV)
+clade_counts["Clade"] = clade_counts["Clade"].astype(str)
+
+if "Isolate_Count" not in clade_counts.columns:
+    clade_counts = clades.groupby("Clade").size().reset_index(name="Isolate_Count")
+
+clade_counts = clade_counts.sort_values(["Isolate_Count", "Clade"], ascending=[False, True])
+clade_levels = clade_counts["Clade"].tolist()
+
+# ==============================================================================
+# 3. Read cgMLST matrix and focus on 704 genomes
+# ==============================================================================
+
+cg = pd.read_csv(CGMLST_TSV, sep="\t", index_col=0)
+cg.index = [accession_root(x) for x in cg.index]
+cg = cg[~pd.Index(cg.index).duplicated(keep="first")]
+
+target_roots = sorted(set(meta["Accession_root"]) & set(clades["Accession_root"]) & set(cg.index))
+
+print(f"[INFO] Target roots in metadata: {meta['Accession_root'].nunique()}")
+print(f"[INFO] Target roots in clades:   {clades['Accession_root'].nunique()}")
+print(f"[INFO] Target roots in cgMLST:   {len(set(meta['Accession_root']) & set(cg.index))}")
+print(f"[INFO] Final intersected roots:  {len(target_roots)}")
+
+if len(target_roots) == 0:
+    raise SystemExit("[ERROR] No overlap among metadata, 12D clades, and cgMLST matrix.")
+
+if len(target_roots) != EXPECTED_N:
+    print(f"[WARN] Expected {EXPECTED_N} genomes, but final intersected set has {len(target_roots)}.")
+
+pd.DataFrame({
+    "Accession_root": sorted(set(meta["Accession_root"]) - set(cg.index))
+}).to_csv(f"{DEBUG_DIR}/14B_metadata_roots_missing_from_cgmlst.csv", index=False)
+
+cg_sub_raw = cg.loc[target_roots].copy()
+
+print("[INFO] Encoding cgMLST allele calls...")
+encoded = pd.DataFrame(index=cg_sub_raw.index)
+
+for col in cg_sub_raw.columns:
+    encoded[col] = cg_sub_raw[col].apply(parse_cgmlst_value).astype(np.int32)
+
+encoded.to_csv(f"{MATRIX_DIR}/14B_cgmlst_encoded_matrix_704.csv.gz", compression="gzip")
+
+# ==============================================================================
+# 4. Compute cgMLST distances and HierCC clusters
+# ==============================================================================
+
+print("[INFO] Computing cgMLST allele-distance matrix...")
+dist_matrix = cgmlst_distance_matrix(encoded)
+
+dist_df = pd.DataFrame(dist_matrix, index=encoded.index, columns=encoded.index)
+dist_df.to_csv(f"{MATRIX_DIR}/14B_cgmlst_allele_distance_matrix_704.csv.gz", compression="gzip")
+
+if len(encoded) >= 2:
+    condensed = squareform(dist_matrix, checks=False)
+    linkage_matrix = sch.linkage(condensed, method="single")
+else:
+    linkage_matrix = None
+
+cluster_df = pd.DataFrame({"Accession_root": encoded.index})
+
+if linkage_matrix is not None:
+    for level_name, threshold in CGMLST_THRESHOLDS.items():
+        raw_labels = sch.fcluster(linkage_matrix, t=threshold, criterion="distance")
+        cluster_df[level_name] = stable_cluster_labels(raw_labels, encoded.index.tolist(), level_name)
+else:
+    for level_name in CGMLST_THRESHOLDS:
+        cluster_df[level_name] = f"{level_name}_001"
+
+if MAIN_CGMLST_LEVEL not in cluster_df.columns:
+    raise SystemExit(f"[ERROR] MAIN_CGMLST_LEVEL={MAIN_CGMLST_LEVEL} not found in cluster_df.")
+
+cluster_df["cgMLST_cluster"] = cluster_df[MAIN_CGMLST_LEVEL]
+
+cluster_df.to_csv(f"{TABLE_DIR}/14B_cgmlst_hiercc_cluster_assignments_704.csv", index=False)
+
+# ==============================================================================
+# 5. Build analysis dataframe: metadata + clade + cgMLST cluster
+# ==============================================================================
+
+analysis_df = (
+    meta.merge(clades[["Accession_root", "Clade"]], on="Accession_root", how="inner")
+        .merge(cluster_df, on="Accession_root", how="inner")
+)
+
+analysis_df = analysis_df.merge(clade_counts, on="Clade", how="left")
+
+# ==============================================================================
+# 6. AMRFinder feature count per genome
+# ==============================================================================
+
+if os.path.exists(AMRFINDER_TSV):
+    print("[INFO] Reading AMRFinderPlus report...")
+    amr = pd.read_csv(AMRFINDER_TSV, sep="\t")
+
+    sample_col = "Sample" if "Sample" in amr.columns else None
+    protein_col = "Protein id" if "Protein id" in amr.columns else None
+    feature_col = "Element symbol" if "Element symbol" in amr.columns else None
+
+    if sample_col is not None and feature_col is not None:
+        amr["Accession_root"] = amr[sample_col].apply(accession_root)
+
+        if protein_col is not None:
+            amr["Protein_accession_root"] = amr[protein_col].apply(accession_root)
+            amr["Accession_root"] = np.where(
+                amr["Accession_root"].isna() | (amr["Accession_root"].astype(str) == ""),
+                amr["Protein_accession_root"],
+                amr["Accession_root"]
+            )
+
+        amr["AMR_feature"] = amr[feature_col].astype(str).str.strip()
+        amr = amr[
+            amr["Accession_root"].isin(analysis_df["Accession_root"])
+            & amr["AMR_feature"].notna()
+            & (amr["AMR_feature"] != "")
+            & (amr["AMR_feature"] != "-")
+        ].copy()
+
+        amr_counts = (
+            amr.drop_duplicates(["Accession_root", "AMR_feature"])
+               .groupby("Accession_root")
+               .agg(
+                   AMRFinder_feature_count=("AMR_feature", "nunique"),
+                   AMRFinder_feature_list=("AMR_feature", lambda x: ";".join(sorted(set(x))))
+               )
+               .reset_index()
+        )
+    else:
+        amr_counts = pd.DataFrame(columns=["Accession_root", "AMRFinder_feature_count", "AMRFinder_feature_list"])
+else:
+    print("[WARN] AMRFinderPlus file not found. AMR feature counts set to 0.")
+    amr_counts = pd.DataFrame(columns=["Accession_root", "AMRFinder_feature_count", "AMRFinder_feature_list"])
+
+analysis_df = analysis_df.merge(amr_counts, on="Accession_root", how="left")
+analysis_df["AMRFinder_feature_count"] = analysis_df["AMRFinder_feature_count"].fillna(0).astype(int)
+analysis_df["AMRFinder_feature_list"] = analysis_df["AMRFinder_feature_list"].fillna("")
+
+# ==============================================================================
+# 7. Within-cgMLST-cluster SNP summaries from 12E pairwise SNP distances
+# ==============================================================================
+
+if os.path.exists(PAIRWISE_SNP_CSV):
+    print("[INFO] Reading 12E pairwise SNP distances...")
+    pairwise = pd.read_csv(PAIRWISE_SNP_CSV)
+
+    pairwise["Root_1"] = pairwise["Tip_ID_1"].apply(accession_root)
+    pairwise["Root_2"] = pairwise["Tip_ID_2"].apply(accession_root)
+
+    # The 12E pairwise file may already contain Clade_1/Clade_2 columns.
+    # Drop any old clade/cluster annotation columns before adding the 14B
+    # clade + cgMLST labels. This prevents pandas from creating _x/_y columns.
+    old_annotation_cols = [
+        "Clade_1", "Clade_2",
+        "Clade_1_x", "Clade_1_y",
+        "Clade_2_x", "Clade_2_y",
+        "cgMLST_cluster_1", "cgMLST_cluster_2",
+        "cgMLST_cluster_1_x", "cgMLST_cluster_1_y",
+        "cgMLST_cluster_2_x", "cgMLST_cluster_2_y"
+    ]
+
+    pairwise = pairwise.drop(
+        columns=[c for c in old_annotation_cols if c in pairwise.columns],
+        errors="ignore"
+    )
+
+    map_df = analysis_df[["Accession_root", "Clade", "cgMLST_cluster"]].drop_duplicates()
+
+    pairwise = (
+        pairwise.merge(
+            map_df.rename(columns={
+                "Accession_root": "Root_1",
+                "Clade": "Clade_1",
+                "cgMLST_cluster": "cgMLST_cluster_1"
+            }),
+            on="Root_1",
+            how="inner",
+            validate="many_to_one"
+        )
+        .merge(
+            map_df.rename(columns={
+                "Accession_root": "Root_2",
+                "Clade": "Clade_2",
+                "cgMLST_cluster": "cgMLST_cluster_2"
+            }),
+            on="Root_2",
+            how="inner",
+            validate="many_to_one"
+        )
+    )
+
+    pairwise_debug = pd.DataFrame({
+        "metric": [
+            "pairwise_rows_after_14B_annotation",
+            "unique_Root_1",
+            "unique_Root_2",
+            "columns_available"
+        ],
+        "value": [
+            len(pairwise),
+            pairwise["Root_1"].nunique(),
+            pairwise["Root_2"].nunique(),
+            ";".join(pairwise.columns.tolist())
+        ]
+    })
+    pairwise_debug.to_csv(f"{DEBUG_DIR}/14B_pairwise_annotation_debug.csv", index=False)
+
+    required_pairwise_cols = ["Clade_1", "Clade_2", "cgMLST_cluster_1", "cgMLST_cluster_2", "SNP_distance"]
+    missing_pairwise_cols = [c for c in required_pairwise_cols if c not in pairwise.columns]
+
+    if missing_pairwise_cols:
+        raise SystemExit(
+            "[ERROR] Pairwise table missing columns after annotation: "
+            + ", ".join(missing_pairwise_cols)
+            + f"\nCheck debug file: {DEBUG_DIR}/14B_pairwise_annotation_debug.csv"
+        )
+
+    within_cluster_pairs = pairwise[
+        (pairwise["Clade_1"] == pairwise["Clade_2"])
+        & (pairwise["cgMLST_cluster_1"] == pairwise["cgMLST_cluster_2"])
+    ].copy()
+
+    snp_summary = (
+        within_cluster_pairs
+        .groupby(["Clade_1", "cgMLST_cluster_1"])
+        .agg(
+            Within_cluster_pair_count=("SNP_distance", "size"),
+            Median_within_cluster_SNP=("SNP_distance", "median"),
+            Mean_within_cluster_SNP=("SNP_distance", "mean"),
+            Max_within_cluster_SNP=("SNP_distance", "max"),
+            IQR_within_cluster_SNP=("SNP_distance", lambda x: np.percentile(x, 75) - np.percentile(x, 25))
+        )
+        .reset_index()
+        .rename(columns={
+            "Clade_1": "Clade",
+            "cgMLST_cluster_1": "cgMLST_cluster"
+        })
+    )
+
+    within_cluster_pairs.to_csv(
+        f"{TABLE_DIR}/14B_within_cgmlst_cluster_pairwise_snp_distances.csv.gz",
+        index=False,
+        compression="gzip"
+    )
+else:
+    print("[WARN] 12E pairwise SNP table not found. SNP summaries set to NA.")
+    snp_summary = pd.DataFrame(columns=[
+        "Clade",
+        "cgMLST_cluster",
+        "Within_cluster_pair_count",
+        "Median_within_cluster_SNP",
+        "Mean_within_cluster_SNP",
+        "Max_within_cluster_SNP",
+        "IQR_within_cluster_SNP"
+    ])
+
+snp_summary.to_csv(f"{TABLE_DIR}/14B_within_cgmlst_cluster_snp_summary.csv", index=False)
+
+# ==============================================================================
+# 8. Temporal summary at Clade + cgMLST cluster level
+# ==============================================================================
+
+valid_years = analysis_df["Numeric_Year"].dropna().astype(int)
+study_first = int(valid_years.min()) if len(valid_years) else np.nan
+study_last = int(valid_years.max()) if len(valid_years) else np.nan
+
+def summarize_cluster(g):
+    years = sorted(set([int(y) for y in g["Numeric_Year"].dropna()]))
+    n = g["Accession_root"].nunique()
+
+    first_year = min(years) if years else np.nan
+    last_year = max(years) if years else np.nan
+    year_span = (last_year - first_year) if years else np.nan
+
+    amr_vals = g["AMRFinder_feature_count"].tolist()
+
+    production_summary = ""
+    if "Production_system" in g.columns:
+        production_summary = ";".join(
+            f"{k}:{v}" for k, v in g["Production_system"].fillna("Unknown").astype(str).value_counts().sort_index().items()
+        )
+
+    source_matrix_summary = ""
+    if "Source_matrix_class" in g.columns:
+        source_matrix_summary = ";".join(
+            f"{k}:{v}" for k, v in g["Source_matrix_class"].fillna("Unknown").astype(str).value_counts().sort_index().items()
+        )
+
+    return pd.Series({
+        "N_genomes": n,
+        "First_year": first_year,
+        "Last_year": last_year,
+        "Year_span": year_span,
+        "Years_detected": len(years),
+        "Detected_years": years_string(years),
+        "Longest_detection_gap": longest_detection_gap(years),
+        "Consecutive_years_detected": longest_consecutive_run(years),
+        "AMRFinder_feature_count_summary": amr_summary_string(amr_vals),
+        "Median_AMRFinder_feature_count": float(np.median(amr_vals)) if len(amr_vals) else 0,
+        "Mean_AMRFinder_feature_count": float(np.mean(amr_vals)) if len(amr_vals) else 0,
+        "Max_AMRFinder_feature_count": int(np.max(amr_vals)) if len(amr_vals) else 0,
+        "Production_system_summary": production_summary,
+        "Source_matrix_summary": source_matrix_summary
+    })
+
+cluster_summary = (
+    analysis_df
+    .groupby(["Clade", "cgMLST_cluster"], dropna=False)
+    .apply(summarize_cluster)
+    .reset_index()
+)
+
+cluster_summary = cluster_summary.merge(
+    snp_summary,
+    on=["Clade", "cgMLST_cluster"],
+    how="left"
+)
+
+cluster_summary["Temporal_category"] = cluster_summary.apply(
+    lambda r: classify_temporal(r, study_first, study_last),
+    axis=1
+)
+
+cluster_summary["Evidence_level"] = cluster_summary.apply(evidence_level, axis=1)
+cluster_summary["Interpretation"] = cluster_summary.apply(make_interpretation, axis=1)
+
+cluster_summary = cluster_summary.sort_values(
+    ["Clade", "N_genomes", "cgMLST_cluster"],
+    ascending=[True, False, True]
+)
+
+main_cols = [
+    "Clade",
+    "cgMLST_cluster",
+    "N_genomes",
+    "First_year",
+    "Last_year",
+    "Year_span",
+    "Years_detected",
+    "Detected_years",
+    "Longest_detection_gap",
+    "Consecutive_years_detected",
+    "Median_within_cluster_SNP",
+    "Mean_within_cluster_SNP",
+    "Max_within_cluster_SNP",
+    "IQR_within_cluster_SNP",
+    "AMRFinder_feature_count_summary",
+    "Median_AMRFinder_feature_count",
+    "Mean_AMRFinder_feature_count",
+    "Max_AMRFinder_feature_count",
+    "Production_system_summary",
+    "Source_matrix_summary",
+    "Temporal_category",
+    "Evidence_level",
+    "Interpretation"
+]
+
+cluster_summary[main_cols].to_csv(
+    f"{TABLE_DIR}/14B_cgmlst_cluster_temporal_category_summary.csv",
+    index=False
+)
+
+# ==============================================================================
+# 9. Genome-level assignment
+# ==============================================================================
+
+genome_assignments = analysis_df.merge(
+    cluster_summary[[
+        "Clade",
+        "cgMLST_cluster",
+        "Temporal_category",
+        "Evidence_level",
+        "Interpretation",
+        "N_genomes",
+        "First_year",
+        "Last_year",
+        "Years_detected",
+        "Longest_detection_gap",
+        "Median_within_cluster_SNP",
+        "Max_within_cluster_SNP"
+    ]],
+    on=["Clade", "cgMLST_cluster"],
+    how="left",
+    suffixes=("", "_cluster")
+)
+
+genome_assignments.to_csv(
+    f"{TABLE_DIR}/14B_genome_level_temporal_category_assignments.csv",
+    index=False
+)
+
+# ==============================================================================
+# 10. Year-count table
+# ==============================================================================
+
+year_counts = (
+    analysis_df
+    .dropna(subset=["Numeric_Year"])
+    .assign(Numeric_Year=lambda d: d["Numeric_Year"].astype(int))
+    .groupby(["Clade", "cgMLST_cluster", "Numeric_Year"])
+    .size()
+    .reset_index(name="Genome_count")
+    .sort_values(["Clade", "cgMLST_cluster", "Numeric_Year"])
+)
+
+year_counts.to_csv(
+    f"{TABLE_DIR}/14B_cgmlst_cluster_year_counts.csv",
+    index=False
+)
+
+category_summary = (
+    cluster_summary
+    .groupby(["Clade", "Temporal_category", "Evidence_level"])
+    .agg(
+        N_cgMLST_clusters=("cgMLST_cluster", "nunique"),
+        N_genomes=("N_genomes", "sum")
+    )
+    .reset_index()
+    .sort_values(["Clade", "Temporal_category", "Evidence_level"])
+)
+
+category_summary.to_csv(
+    f"{TABLE_DIR}/14B_temporal_category_summary_by_clade.csv",
+    index=False
+)
+
+# ==============================================================================
+# 11. Figures
+# ==============================================================================
+
+print("[INFO] Generating figures...")
+
+# Figure 1: temporal category genome burden by clade
+plot_df = category_summary.copy()
+
+plt.figure(figsize=(11, 6))
+sns.barplot(
+    data=plot_df,
+    x="Clade",
+    y="N_genomes",
+    hue="Temporal_category"
+)
+plt.title("Genome burden by temporal cgMLST-cluster category")
+plt.xlabel("Core-SNP clade")
+plt.ylabel("Genome count")
+plt.xticks(rotation=25, ha="right")
+plt.legend(title="Temporal category", bbox_to_anchor=(1.02, 1), loc="upper left")
+plt.tight_layout()
+plt.savefig(f"{FIGURE_DIR}/14B_temporal_category_genome_count_by_clade.png", bbox_inches="tight")
+plt.savefig(f"{FIGURE_DIR}/14B_temporal_category_genome_count_by_clade.pdf", bbox_inches="tight")
+plt.close()
+
+# Figure 2: top cgMLST clusters by year
+top_clusters = (
+    cluster_summary
+    .sort_values("N_genomes", ascending=False)
+    .head(40)[["Clade", "cgMLST_cluster"]]
+)
+top_set = set(zip(top_clusters["Clade"], top_clusters["cgMLST_cluster"]))
+
+heat_df = year_counts[
+    year_counts.apply(lambda r: (r["Clade"], r["cgMLST_cluster"]) in top_set, axis=1)
+].copy()
+
+if not heat_df.empty:
+    label_meta = cluster_summary[[
+        "Clade",
+        "cgMLST_cluster",
+        "N_genomes",
+        "Temporal_category",
+        "Evidence_level"
+    ]].drop_duplicates().copy()
+
+    heat_df = heat_df.merge(
+        label_meta,
+        on=["Clade", "cgMLST_cluster"],
+        how="left"
+    )
+
+    heat_df["Cluster_label"] = (
+        heat_df["Clade"].astype(str)
+        + " | "
+        + heat_df["cgMLST_cluster"].astype(str)
+        + " (n="
+        + heat_df["N_genomes"].astype(int).astype(str)
+        + "; "
+        + heat_df["Temporal_category"].astype(str)
+        + ")"
+    )
+
+    heat_mat = (
+        heat_df
+        .pivot_table(
+            index="Cluster_label",
+            columns="Numeric_Year",
+            values="Genome_count",
+            fill_value=0,
+            aggfunc="sum"
+        )
+    )
+
+    row_order = (
+        heat_df.groupby("Cluster_label")["Genome_count"]
+        .sum()
+        .sort_values(ascending=False)
+        .index
+        .tolist()
+    )
+
+    heat_mat = heat_mat.loc[row_order]
+
+    heatmap_labels = heat_mat.astype(int).astype(str)
+    heatmap_labels = heatmap_labels.mask(heat_mat == 0, "")
+
+    fig_height = max(8, 0.52 * len(heat_mat))
+
+    plt.figure(figsize=(16, fig_height))
+    ax = sns.heatmap(
+        heat_mat,
+        cmap="Greys",
+        linewidths=0.25,
+        linecolor="white",
+        cbar_kws={"label": "Genome count"},
+        yticklabels=True,
+        xticklabels=True,
+        annot=heatmap_labels,
+        fmt="",
+        annot_kws={"fontsize": 7}
+    )
+
+    ax.set_yticklabels(ax.get_yticklabels(), rotation=0, fontsize=8)
+    ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha="right", fontsize=9)
+
+    if TOP_N_CGMLST_PLOT == "ALL":
+        plot_title = f"All {MAIN_CGMLST_LEVEL} cgMLST clusters across collection years"
+    else:
+        plot_title = f"Top {TOP_N_CGMLST_PLOT} {MAIN_CGMLST_LEVEL} cgMLST clusters by genome count across collection years"
+
+    plt.title(plot_title)
+    plt.xlabel("Collection year")
+    plt.ylabel("Clade | cgMLST cluster (n; temporal category)")
+    plt.tight_layout()
+    plt.savefig(f"{FIGURE_DIR}/14B_top_cgmlst_clusters_year_heatmap_labeled.png", bbox_inches="tight")
+    plt.savefig(f"{FIGURE_DIR}/14B_top_cgmlst_clusters_year_heatmap_labeled.pdf", bbox_inches="tight")
+    plt.close()
+
+    # Bubble plot: only observed cluster-year combinations.
+    # This avoids the large white space caused by zero-count cells.
+    bubble_df = heat_df[heat_df["Genome_count"] > 0].copy()
+    bubble_df["Cluster_label"] = pd.Categorical(
+        bubble_df["Cluster_label"],
+        categories=row_order[::-1],
+        ordered=True
+    )
+
+    plt.figure(figsize=(16, fig_height))
+    ax = sns.scatterplot(
+        data=bubble_df,
+        x="Numeric_Year",
+        y="Cluster_label",
+        size="Genome_count",
+        hue="Temporal_category",
+        sizes=(35, 500),
+        alpha=0.85,
+        edgecolor="black",
+        linewidth=0.25
+    )
+
+    plt.title(plot_title.replace("across collection years", "observed across collection years"))
+    plt.xlabel("Collection year")
+    plt.ylabel("Clade | cgMLST cluster (n; temporal category)")
+    plt.xticks(sorted(bubble_df["Numeric_Year"].dropna().unique()), rotation=45, ha="right")
+    plt.legend(
+        title="Temporal category / genome count",
+        bbox_to_anchor=(1.02, 1),
+        loc="upper left",
+        borderaxespad=0
+    )
+    plt.tight_layout()
+    plt.savefig(f"{FIGURE_DIR}/14B_top_cgmlst_clusters_year_bubbleplot_observed_only.png", bbox_inches="tight")
+    plt.savefig(f"{FIGURE_DIR}/14B_top_cgmlst_clusters_year_bubbleplot_observed_only.pdf", bbox_inches="tight")
+    plt.close()
+
+    heat_df.to_csv(
+        f"{TABLE_DIR}/14B_cgmlst_cluster_year_heatmap_plotting_data_labeled.csv",
+        index=False
+    )
+
+# Figure 3: within-cluster SNP distance by temporal category
+snp_plot_df = cluster_summary.dropna(subset=["Median_within_cluster_SNP"]).copy()
+
+if not snp_plot_df.empty:
+    plt.figure(figsize=(11, 6))
+    sns.boxplot(
+        data=snp_plot_df,
+        x="Temporal_category",
+        y="Median_within_cluster_SNP"
+    )
+    sns.stripplot(
+        data=snp_plot_df,
+        x="Temporal_category",
+        y="Median_within_cluster_SNP",
+        color="black",
+        alpha=0.45,
+        size=4
+    )
+    plt.title("Median within-cgMLST-cluster SNP distance by temporal category")
+    plt.xlabel("Temporal category")
+    plt.ylabel("Median within-cluster SNP distance")
+    plt.xticks(rotation=35, ha="right")
+    plt.tight_layout()
+    plt.savefig(f"{FIGURE_DIR}/14B_within_cluster_snp_by_temporal_category.png", bbox_inches="tight")
+    plt.savefig(f"{FIGURE_DIR}/14B_within_cluster_snp_by_temporal_category.pdf", bbox_inches="tight")
+    plt.close()
+
+# ==============================================================================
+# 12. README / manifest
+# ==============================================================================
+
+readme_lines = [
+    "Script 14B: cgMLST cluster temporal dynamics within 12D core-SNP clades",
+    "",
+    "What this analysis is designed to achieve:",
+    "1. Restrict analysis to the exact non-dairy cattle pre-harvest genome set used in 12C/12D.",
+    "2. Use 12D core-SNP clades as broad genomic lineages.",
+    "3. Use cgMLST HierCC-style clusters as finer sublineages within each clade.",
+    "4. Summarize temporal behavior of each cgMLST cluster using first year, last year, year span, years detected, detection gaps, and consecutive-year detection.",
+    "5. Merge within-cluster SNP distances from 12E to check genomic coherence.",
+    "6. Merge AMRFinderPlus feature counts to describe AMR burden per cluster.",
+    "7. Classify each cgMLST cluster as persistent-like, emerging-like, re-emergence-like / unsampled persistence, sporadic/minority, or limited.",
+    "8. Assign every genome to the temporal category of its cgMLST cluster.",
+    "",
+    "Interpretation caution:",
+    "These are sampling-aware categories. Absence in a year means not observed in public genomes, not confirmed biological absence.",
+    "",
+    "Main output table:",
+    "tables/14B_cgmlst_cluster_temporal_category_summary.csv",
+    "",
+    "Genome-level assignment table:",
+    "tables/14B_genome_level_temporal_category_assignments.csv"
+]
+
+with open(f"{OUTPUT_DIR}/README_14B_cgmlst_clade_temporal_dynamics.txt", "w") as f:
+    f.write("\n".join(readme_lines) + "\n")
+
+manifest = pd.DataFrame({
+    "output_type": [
+        "main_cluster_summary",
+        "genome_level_assignments",
+        "cluster_year_counts",
+        "within_cluster_snp_summary",
+        "cgmlst_cluster_assignments",
+        "temporal_category_summary_by_clade",
+        "figures",
+        "readme"
+    ],
+    "path": [
+        f"{TABLE_DIR}/14B_cgmlst_cluster_temporal_category_summary.csv",
+        f"{TABLE_DIR}/14B_genome_level_temporal_category_assignments.csv",
+        f"{TABLE_DIR}/14B_cgmlst_cluster_year_counts.csv",
+        f"{TABLE_DIR}/14B_within_cgmlst_cluster_snp_summary.csv",
+        f"{TABLE_DIR}/14B_cgmlst_hiercc_cluster_assignments_704.csv",
+        f"{TABLE_DIR}/14B_temporal_category_summary_by_clade.csv",
+        FIGURE_DIR,
+        f"{OUTPUT_DIR}/README_14B_cgmlst_clade_temporal_dynamics.txt"
+    ]
+})
+manifest.to_csv(f"{OUTPUT_DIR}/14B_output_manifest.csv", index=False)
+
+# ==============================================================================
+# 13. Terminal report
+# ==============================================================================
+
+print("")
+print("==========================================================")
+print(" Script 14B completed successfully")
+print("==========================================================")
+print(f"[OUTPUT] {OUTPUT_DIR}")
+print("")
+print("=== Input summary ===")
+print(pd.DataFrame({
+    "metric": [
+        "final_genomes_analyzed",
+        "cgMLST_loci",
+        "main_cgMLST_level",
+        "cgMLST_clusters",
+        "clades",
+        "study_first_year",
+        "study_last_year"
+    ],
+    "value": [
+        len(analysis_df),
+        encoded.shape[1],
+        MAIN_CGMLST_LEVEL,
+        cluster_summary["cgMLST_cluster"].nunique(),
+        cluster_summary["Clade"].nunique(),
+        study_first,
+        study_last
+    ]
+}))
+print("")
+print("=== Temporal category summary ===")
+print(category_summary)
+print("")
+print("[DONE] Main table:")
+print(f"{TABLE_DIR}/14B_cgmlst_cluster_temporal_category_summary.csv")
