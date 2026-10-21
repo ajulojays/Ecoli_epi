@@ -339,6 +339,8 @@ def main():
             c = int((~in_cl & pers).sum())
             d = int((~in_cl & ~pers).sum())
             odds, p = fisher_exact([[a,b],[c,d]], alternative="two-sided")
+            if not np.isfinite(p):
+                p = 1.0
             tests.append({
                 "HC_level": level,
                 "Clade": cl,
