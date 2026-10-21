@@ -1,0 +1,8 @@
+.venv/
+outputs/
+inputs/metadata_704.csv
+inputs/cgMLST95.tsv
+inputs/all_preharvest_704_clades.csv
+inputs/all_preharvest_704_core_phylo.treefile
+__pycache__/
+*.pyc
